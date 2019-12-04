@@ -32,27 +32,34 @@ $conf = Config::getInstance( $config );
 $conf->parseJsonFile( $conf->googleJsonFile );
 
 
-$GooglePhotos = new GooglePhotos();
-
+// Se agregan las librerias necesarias
 use Google\Auth\ApplicationDefaultCredentials;
 use Google\Auth\Credentials\UserRefreshCredentials;
 use Google\Photos\Library\V1\PhotosLibraryClient;
 use Google\Photos\Library\V1\PhotosLibraryResourceFactory;
 use Google\Auth\OAuth2;
 
-
+/////////////////////////////////
+// Inicia el cliente de google //
+/////////////////////////////////
 $client = new Google_Client();
 $client->setAuthConfig( $conf->googleJsonFile );
 $client->addScope("https://www.googleapis.com/auth/photoslibrary.readonly");
 $client->setRedirectUri( $conf->urlRedirect );
 
+// Inicia el buffer de salida
 $buffer = "";
 
+// verifica que no haya una peticion de login activa y que no exista una session de token
+// esto indica que no se ha iniciado el proceso y se inicia con la acción login
+// para que el usuario pueda garantizar el acceso a sus contenido de photos
 if( isset( $_GET['login'] ) == false && isset( $_SESSION['token'] ) == false )
 {
 	 header("Location: index.php?login");
 }
 
+// Si se invoca index.php?logout, se borrarán las sessiones activas de googlefotos
+// y se redirige al login de nuevo
 if( isset( $_GET['logout'] ) )
 {
 	$_SESSION = array();
@@ -60,9 +67,7 @@ if( isset( $_GET['logout'] ) )
 	header("Location: index.php?login");
 }
 
-///////////////////
-// Para el login //
-///////////////////
+// Si hay una petición de login, se imprime el formulario con la url de acceso del usuario
 if( isset( $_GET['login'] ) )
 {
 	$authUrl = $client->createAuthUrl();
@@ -93,44 +98,43 @@ if ( isset($_GET['code']) )
     
 }
 
+/**
+ * La funcion setea una token nuevo valido, despues de agregarlo a session realiza una redireccion
+ * @param [type] $token [description]
+ */
 function setToken( $token )
 {
 	$refreshToken = $token['access_token'];
     $_SESSION['token'] = serialize( $token );
     $_SESSION['expire'] = time() + $token['expires_in'];
-	// Return the user to the home page.
-	header("Location: index.php");
-}
-/////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Si hay una session activa significa que un access token fue generado, pero posiblemente ya venció,  //
-// si esto pasa se solicita uno nuevo sin login de nuevo                                               //
-/////////////////////////////////////////////////////////////////////////////////////////////////////////
-// if ( isset( $_SESSION['token'] ) )
-// {
-// 	$client->setAccessToken( $_SESSION['token'] );
-	// $_SESSION['token']
 
-// Use the OAuth flow provided by the Google API Client Auth library
-// to authenticate users. See the file /src/common/common.php in the samples for a complete
-// authentication example.
+	header("Location: index.php");
+
+}
+
+// Se obtiene el archivo  credencial generado en google
 $jsonFile = json_decode( file_get_contents( $conf->googleJsonFile ) );
 
+// Se realiza una verificación de la validez, del token
 if( time() > $_SESSION['expire'] )
 {
+	// Se obtiene el refresh token desde la sessión para
+	// preparar la informacón a pasar al refreshToken
 	$token = unserialize($_SESSION['token']);
 	
-	echo 'El token Vencio hay que renovarlo tiempo :: ';
-	echo 'El token Vencio hay que renovarlo tiempo :: ' . time() . '<pre>'; print_r($token); echo '</pre>';
-
+	// Se obtiene la información desde el archivo de credenciales de google
 	$data =(Array)$jsonFile->web;
 	
 	$client_id = $data['client_id'];
 	$client_secret = $data['client_secret'];
 	$refresh_token = $token['access_token'];
 	
-	// $token = $client->refreshToken( $refresh_token );
+	// Se realiza la petición de un token nuevo
+	$token = $client->refreshToken( $refresh_token );
+	$error = isset( $token['error'] ) ? $token['error'] : '';
 
-	if( $token )
+	// Si no hay error, redirige con un token renovado
+	if( empty($error) && $token )
 	{
 		//////////////////////////////////////
 		// ACA HAY QUE PONER EL NUEVO TOKEN //
@@ -141,43 +145,50 @@ if( time() > $_SESSION['expire'] )
 }
 else
 {
+	// Si el token no ha vencido, se obtiene de la session para
+	// realizar los request de albumes
 	$token = unserialize($_SESSION['token']);
-	// echo 'erer<pre>'; print_r($token); echo '</pre>';
-	echo "El token no ha vencido token :: <pre>" . print_r($token, true) . ' </pre>';
-	echo 'El token no ha vencido tiempo :: ' .  '<hr> Current : ' . time() . "<br>Expire :: "  . $_SESSION['expire'] . '<hr>';
-}
+	$error = isset( $token['error'] ) ? $token['error'] : '';
 
-$error = isset( $token['error'] ) ? $token['error'] : '';
-
-if( $error == "invalid_grant" )
-{
-	$authUrl = $client->createAuthUrl();
-	header("Location: " . $authUrl );
-}
-else
-{
-
-	$sessiontoken = unserialize( $_SESSION['token'] );
-	$jsonFile->web->refresh_token = $sessiontoken['access_token'];
-
-	$authCredentials = new UserRefreshCredentials(
-		"https://www.googleapis.com/auth/photoslibrary.readonly",
-		(Array)$jsonFile->web
-	);
-
-	// Set up the Photos Library Client that interacts with the API
-	$photosLibraryClient = new PhotosLibraryClient(['credentials' => $authCredentials]);
-	$pagelistResponse = $photosLibraryClient->listAlbums( array( 'pageSize'=>1 ) );
-
-	$buffer .= '<div>';
-	$buffer .= '<h1>Ir al album::</h1>';
-	foreach ($pagelistResponse as $element) {
-		$buffer .= '<div>';
-	    	$buffer .= '<a href="' . $element->getProductUrl() . '" target="_blank">' . $element->getTitle() . '</a>';
-	    $buffer .= '</div>';
+	// Si un error en la obtención del token se realiza un intento con autenticación
+	// basados en cookie
+	if( $error == "invalid_grant" )
+	{
+		$authUrl = $client->createAuthUrl();
+		header("Location: " . $authUrl );
 	}
+	else
+	{
+		// Se obtiene el token desde la session
+		$sessiontoken = unserialize( $_SESSION['token'] );
 
+		// Se obtienen los datos desde el archivos de credenciales
+		$jsonFile->web->refresh_token = $sessiontoken['access_token'];
+
+		// Se realiza ensambla un objeto de identificación para las peticiones
+		$authCredentials = new UserRefreshCredentials(
+			"https://www.googleapis.com/auth/photoslibrary.readonly",
+			(Array)$jsonFile->web
+		);
+
+		// Se configura la libreria cliente de googlephotos, que interactuará con el api
+		$photosLibraryClient = new PhotosLibraryClient(['credentials' => $authCredentials]);
+
+		// Se obtiene una lista de los albumes del usuario y se impirmen en pantalla
+		$pagelistResponse = $photosLibraryClient->listAlbums( array( 'pageSize'=>1 ) );
+
+		$buffer .= '<div>';
+		$buffer .= '<h1>Ir al album::</h1>';
+
+		foreach ($pagelistResponse as $element) {
+			$buffer .= '<div>';
+		    	$buffer .= '<a href="' . $element->getProductUrl() . '" target="_blank">' . $element->getTitle() . '</a>';
+		    $buffer .= '</div>';
+		}
+		
+		$buffer .= '</div>';
+
+	}
 }
 
-$buffer .= '</div>';
 echo $buffer;
